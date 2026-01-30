@@ -6,3 +6,26 @@ coverage/
 !dist/**/*.ts
 tsconfig.json
 test-*.ts
+.env*
+
+# Exclude template node_modules and build artifacts
+templates/*/node_modules/
+templates/*/.next/
+templates/*/dist/
+templates/*/build/
+templates/*/.turbo/
+templates/*/coverage/
+
+# Exclude package node_modules and build artifacts (except necessary ones)
+packages/*/node_modules/
+packages/*/.next/
+packages/*/dist/
+packages/*/build/
+packages/*/.turbo/
+packages/*/coverage/
+
+# Exclude CLI dashboard build artifacts
+packages/cli/src/dashboard/node_modules/
+packages/cli/src/dashboard/.next/
+packages/cli/src/dashboard/dist/
+packages/cli/src/dashboard/build/

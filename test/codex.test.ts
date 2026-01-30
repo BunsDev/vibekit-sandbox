@@ -1,422 +1,56 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { CodexAgent } from "../src/agents/codex";
-import { CodexConfig, CodexStreamCallbacks } from "../src/types";
-import { Sandbox } from "@e2b/code-interpreter";
-import { generatePRMetadata } from "../src/agents/utils.js";
-import { createSandboxProvider } from "../src/services/sandbox.js";
+import { describe, it, expect, vi } from "vitest";
+import { VibeKit } from "../packages/sdk/src/index.js";
+import { createE2BProvider } from "../packages/e2b/src/index.js";
+import { skipIfNoCodexKeys, skipTest } from "./helpers/test-utils.js";
+import dotenv from "dotenv";
 
-// Mock dependencies
-vi.mock("e2b");
-vi.mock("@ai-sdk/openai");
-vi.mock("../src/agents/utils.js");
-vi.mock("../src/services/sandbox.js");
+dotenv.config();
 
-const MockedSandbox = vi.mocked(Sandbox);
-const MockedCreateSandboxProvider = vi.mocked(createSandboxProvider);
+describe("Codex CLI", () => {
+  it("should generate code with codex cli", async () => {
+    if (skipIfNoCodexKeys()) {
+      return skipTest();
+    }
 
-describe("CodexAgent", () => {
-  let config: CodexConfig;
-  let mockSandbox: any;
-  let codexAgent: CodexAgent;
+    const prompt = "Replace the README with the text 'HELLO WORLD'";
 
-  beforeEach(() => {
-    config = {
-      providerApiKey: "test-openai-key",
-      githubToken: "test-github-token",
-      repoUrl: "octocat/hello-world",
-      e2bApiKey: "test-e2b-key",
-      e2bTemplateId: "test-template-id",
-      sandboxConfig: {
-        type: "e2b" as const,
-        apiKey: "test-e2b-key",
-        templateId: "test-template-id",
-      },
-      model: "gpt-4",
-    };
-
-    mockSandbox = {
-      sandboxId: "test-sandbox-id",
-      commands: {
-        run: vi.fn(),
-      },
-      kill: vi.fn(),
-      pause: vi.fn(),
-    };
-
-    const mockProvider = {
-      create: vi.fn().mockResolvedValue(mockSandbox),
-      resume: vi.fn().mockResolvedValue(mockSandbox),
-    };
-    MockedCreateSandboxProvider.mockReturnValue(mockProvider);
-
-    codexAgent = new CodexAgent(config);
-
-    // Mock fetch globally
-    global.fetch = vi.fn();
-  });
-
-  afterEach(() => {
-    vi.clearAllMocks();
-  });
-
-  describe("constructor", () => {
-    it("should initialize with provided config", () => {
-      expect(codexAgent).toBeInstanceOf(CodexAgent);
+    const e2bProvider = createE2BProvider({
+      apiKey: process.env.E2B_API_KEY!,
+      templateId: "vibekit-codex",
     });
 
-    it("should throw error when no API key is provided", () => {
-      const configWithoutKey = {
-        githubToken: "test-github-token",
-        repoUrl: "octocat/hello-world",
-        e2bApiKey: "test-e2b-key",
-        e2bTemplateId: "test-template-id",
-        sandboxConfig: {
-          type: "e2b" as const,
-          apiKey: "test-e2b-key",
-          templateId: "test-template-id",
-        },
-        model: "gpt-4",
-      };
-      expect(() => new CodexAgent(configWithoutKey as any)).toThrow(
-        "Provider API key is required. Please provide providerApiKey, apiKey, or openaiApiKey."
-      );
-    });
+    const vibeKit = new VibeKit()
+      .withAgent({
+        type: "codex",
+        provider: "openai",
+        apiKey: process.env.OPENAI_API_KEY!,
+        model: "codex-mini-latest",
+      })
+      .withSecrets({
+        GH_TOKEN: process.env.GH_TOKEN || process.env.GITHUB_TOKEN!,
+      })
+      .withSandbox(e2bProvider);
 
-    it("should support custom provider", () => {
-      const configWithProvider = {
-        providerApiKey: "test-openai-key",
-        provider: "anthropic" as const,
-        githubToken: "test-github-token",
-        repoUrl: "octocat/hello-world",
-        e2bApiKey: "test-e2b-key",
-        e2bTemplateId: "test-template-id",
-        sandboxConfig: {
-          type: "e2b" as const,
-          apiKey: "test-e2b-key",
-          templateId: "test-template-id",
-        },
-        model: "gpt-4",
-      };
-      const agent = new CodexAgent(configWithProvider);
-      expect(agent).toBeInstanceOf(CodexAgent);
-    });
-  });
+    // Clone repository first
+    const repository = process.env.GH_REPOSITORY || "superagent-ai/signals";
+    await vibeKit.cloneRepository(repository);
 
-  describe("getSandbox", () => {
-    it("should create a new sandbox when no sandboxId is provided", async () => {
-      const mockProvider = {
-        create: vi.fn().mockResolvedValue(mockSandbox),
-        resume: vi.fn().mockResolvedValue(mockSandbox),
-      };
-      MockedCreateSandboxProvider.mockReturnValue(mockProvider);
+    const updateSpy = vi.fn();
+    const errorSpy = vi.fn();
 
-      await codexAgent.generateCode("test prompt");
+    vibeKit.on("stdout", updateSpy);  // executeCommand emits stdout events
+    vibeKit.on("stderr", errorSpy);   // executeCommand emits stderr events
 
-      expect(mockProvider.create).toHaveBeenCalledWith(
-        {
-          type: "e2b",
-          apiKey: "test-e2b-key",
-          templateId: "test-template-id",
-        },
-        {
-          OPENAI_API_KEY: "test-openai-key",
-        },
-        "codex"
-      );
-    });
+    // Get the codex command for the prompt
+    const codexCommand = `codex exec --full-auto --skip-git-repo-check "${prompt}"`;
+    const result = await vibeKit.executeCommand(codexCommand);
+    const host = await vibeKit.getHost(3000);
 
-    it("should resume existing sandbox when sandboxId is provided", async () => {
-      const mockProvider = {
-        create: vi.fn().mockResolvedValue(mockSandbox),
-        resume: vi.fn().mockResolvedValue(mockSandbox),
-      };
-      MockedCreateSandboxProvider.mockReturnValue(mockProvider);
+    await vibeKit.kill();
 
-      const configWithSandboxId = {
-        ...config,
-        sandboxId: "existing-sandbox-id",
-      };
-      const agentWithExistingSandbox = new CodexAgent(configWithSandboxId);
-
-      await agentWithExistingSandbox.generateCode("test prompt");
-
-      expect(mockProvider.resume).toHaveBeenCalledWith("existing-sandbox-id", {
-        type: "e2b",
-        apiKey: "test-e2b-key",
-        templateId: "test-template-id",
-      });
-    });
-
-    it("should reuse existing sandbox instance", async () => {
-      const mockProvider = {
-        create: vi.fn().mockResolvedValue(mockSandbox),
-        resume: vi.fn().mockResolvedValue(mockSandbox),
-      };
-      MockedCreateSandboxProvider.mockReturnValue(mockProvider);
-
-      await codexAgent.generateCode("test prompt 1");
-      await codexAgent.generateCode("test prompt 2");
-
-      expect(mockProvider.create).toHaveBeenCalledTimes(1);
-    });
-  });
-
-  describe("killSandbox", () => {
-    it("should kill the sandbox if it exists", async () => {
-      await codexAgent.generateCode("test prompt");
-      await codexAgent.killSandbox();
-
-      expect(mockSandbox.kill).toHaveBeenCalled();
-    });
-
-    it("should not throw error if no sandbox exists", async () => {
-      await expect(codexAgent.killSandbox()).resolves.not.toThrow();
-    });
-  });
-
-  describe("pauseSandbox", () => {
-    it("should pause the sandbox if it exists", async () => {
-      await codexAgent.generateCode("test prompt");
-      await codexAgent.pauseSandbox();
-
-      expect(mockSandbox.pause).toHaveBeenCalled();
-    });
-
-    it("should not throw error if no sandbox exists", async () => {
-      await expect(codexAgent.pauseSandbox()).resolves.not.toThrow();
-    });
-  });
-
-  describe("resumeSandbox", () => {
-    it("should resume the sandbox if it exists", async () => {
-      const mockProvider = {
-        create: vi.fn().mockResolvedValue(mockSandbox),
-        resume: vi.fn().mockResolvedValue(mockSandbox),
-      };
-      MockedCreateSandboxProvider.mockReturnValue(mockProvider);
-
-      await codexAgent.generateCode("test prompt");
-      await codexAgent.resumeSandbox();
-
-      expect(mockProvider.resume).toHaveBeenCalledWith("test-sandbox-id", {
-        type: "e2b",
-        apiKey: "test-e2b-key",
-        templateId: "test-template-id",
-      });
-    });
-
-    it("should not throw error if no sandbox exists", async () => {
-      await expect(codexAgent.resumeSandbox()).resolves.not.toThrow();
-    });
-  });
-
-  describe("generateCode", () => {
-    beforeEach(() => {
-      mockSandbox.commands.run.mockResolvedValue({
-        exitCode: 0,
-        stdout: "Code generated successfully",
-        stderr: "",
-      });
-    });
-
-    it("should generate code successfully with new sandbox", async () => {
-      const result = await codexAgent.generateCode(
-        "Create a hello world function"
-      );
-
-      expect(result).toEqual({
-        sandboxId: "test-sandbox-id",
-        exitCode: 0,
-        stdout: "Code generated successfully",
-        stderr: "",
-      });
-    });
-
-    it("should clone repository for new sandbox", async () => {
-      await codexAgent.generateCode("test prompt");
-
-      expect(mockSandbox.commands.run).toHaveBeenCalledWith(
-        "cd /vibe0 && git clone https://x-access-token:test-github-token@github.com/octocat/hello-world.git .",
-        { timeoutMs: 3600000, background: false }
-      );
-    });
-
-    it("should configure git user for new sandbox", async () => {
-      await codexAgent.generateCode("test prompt");
-
-      expect(mockSandbox.commands.run).toHaveBeenCalledWith(
-        'cd /vibe0 && git config user.name "github-actions[bot]" && git config user.email "github-actions[bot]@users.noreply.github.com"',
-        { timeoutMs: 60000, background: false }
-      );
-    });
-
-    it("should run codex command with correct parameters", async () => {
-      await codexAgent.generateCode("test prompt");
-
-      expect(mockSandbox.commands.run).toHaveBeenCalledWith(
-        'cd /vibe0 && codex --approval-mode auto-edit --model gpt-4 --provider openai --quiet "Do the necessary changes to the codebase based on the users input.\nDon\'t ask any follow up questions.\n\nUser: test prompt"',
-        expect.objectContaining({
-          timeoutMs: 3600000,
-          background: false,
-        })
-      );
-    });
-
-    it("should run codex command without model parameter when not specified", async () => {
-      const configWithoutModel = { ...config };
-      delete configWithoutModel.model;
-      const agentWithoutModel = new CodexAgent(configWithoutModel);
-
-      await agentWithoutModel.generateCode("test prompt");
-
-      expect(mockSandbox.commands.run).toHaveBeenCalledWith(
-        'cd /vibe0 && codex --approval-mode auto-edit --provider openai --quiet "Do the necessary changes to the codebase based on the users input.\nDon\'t ask any follow up questions.\n\nUser: test prompt"',
-        expect.objectContaining({
-          timeoutMs: 3600000,
-          background: false,
-        })
-      );
-    });
-
-    it("should run codex command with custom provider", async () => {
-      const configWithProvider = {
-        providerApiKey: "test-openai-key",
-        provider: "anthropic" as const,
-        githubToken: "test-github-token",
-        repoUrl: "octocat/hello-world",
-        e2bApiKey: "test-e2b-key",
-        e2bTemplateId: "test-template-id",
-        sandboxConfig: {
-          type: "e2b" as const,
-          apiKey: "test-e2b-key",
-          templateId: "test-template-id",
-        },
-        model: "gpt-4",
-      };
-      const agentWithProvider = new CodexAgent(configWithProvider);
-
-      await agentWithProvider.generateCode("test prompt");
-
-      expect(mockSandbox.commands.run).toHaveBeenNthCalledWith(
-        4,
-        'cd /vibe0 && codex --approval-mode auto-edit --model gpt-4 --provider anthropic --quiet "Do the necessary changes to the codebase based on the users input.\nDon\'t ask any follow up questions.\n\nUser: test prompt"',
-        expect.objectContaining({
-          timeoutMs: 3600000,
-          background: false,
-        })
-      );
-    });
-
-    it("should set correct environment variable for custom provider", async () => {
-      const configWithProvider = {
-        providerApiKey: "test-openai-key",
-        provider: "anthropic" as const,
-        githubToken: "test-github-token",
-        repoUrl: "octocat/hello-world",
-        e2bApiKey: "test-e2b-key",
-        e2bTemplateId: "test-template-id",
-        sandboxConfig: {
-          type: "e2b" as const,
-          apiKey: "test-e2b-key",
-          templateId: "test-template-id",
-        },
-        model: "gpt-4",
-      };
-      const agentWithProvider = new CodexAgent(configWithProvider);
-
-      const mockProvider = {
-        create: vi.fn().mockResolvedValue(mockSandbox),
-        resume: vi.fn().mockResolvedValue(mockSandbox),
-      };
-      MockedCreateSandboxProvider.mockReturnValue(mockProvider);
-
-      await agentWithProvider.generateCode("test prompt");
-
-      expect(mockProvider.create).toHaveBeenCalledWith(
-        {
-          type: "e2b",
-          apiKey: "test-e2b-key",
-          templateId: "test-template-id",
-        },
-        {
-          ANTHROPIC_API_KEY: "test-openai-key",
-        },
-        "codex"
-      );
-    });
-
-    it("should call callbacks when provided", async () => {
-      const callbacks: CodexStreamCallbacks = {
-        onUpdate: vi.fn(),
-        onError: vi.fn(),
-      };
-
-      await codexAgent.generateCode(
-        "test prompt",
-        "code",
-        undefined,
-        [],
-        callbacks
-      );
-
-      expect(callbacks.onUpdate).toHaveBeenCalledWith(
-        '{"type": "start", "sandbox_id": "test-sandbox-id"}'
-      );
-      expect(callbacks.onUpdate).toHaveBeenCalledWith(
-        '{"type": "git", "output": "Cloning repository: octocat/hello-world"}'
-      );
-      expect(callbacks.onUpdate).toHaveBeenCalledWith(
-        expect.stringContaining('{"type": "end"')
-      );
-    });
-
-    it("should handle existing sandbox correctly", async () => {
-      const configWithSandboxId = {
-        ...config,
-        sandboxId: "existing-sandbox-id",
-      };
-      const agentWithExistingSandbox = new CodexAgent(configWithSandboxId);
-
-      const callbacks: CodexStreamCallbacks = {
-        onUpdate: vi.fn(),
-      };
-
-      await agentWithExistingSandbox.generateCode(
-        "test prompt",
-        "code",
-        undefined,
-        [],
-        callbacks
-      );
-
-      expect(callbacks.onUpdate).toHaveBeenCalledWith(
-        '{"type": "start", "sandbox_id": "existing-sandbox-id"}'
-      );
-      // Should not call git clone for existing sandbox
-      expect(mockSandbox.commands.run).not.toHaveBeenCalledWith(
-        expect.stringContaining("git clone"),
-        expect.any(Object)
-      );
-    });
-
-    it("should throw error when sandbox command fails", async () => {
-      mockSandbox.commands.run.mockRejectedValue(new Error("Command failed"));
-
-      await expect(codexAgent.generateCode("test prompt")).rejects.toThrow(
-        "Failed to generate code: Command failed"
-      );
-    });
-
-    it("should throw error when sandbox creation fails", async () => {
-      const mockProvider = {
-        create: vi.fn().mockRejectedValue(new Error("Sandbox creation failed")),
-        resume: vi.fn().mockResolvedValue(mockSandbox),
-      };
-      MockedCreateSandboxProvider.mockReturnValue(mockProvider);
-
-      await expect(codexAgent.generateCode("test prompt")).rejects.toThrow(
-        "Sandbox creation failed"
-      );
-    });
-  });
+    expect(result).toBeDefined();
+    expect(host).toBeDefined();
+    expect(updateSpy).toHaveBeenCalled();
+    expect(errorSpy).not.toHaveBeenCalled();
+  }, 600000);
 });

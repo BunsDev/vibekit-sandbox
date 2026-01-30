@@ -1,901 +1,170 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { VibeKit, VibeKitConfig, PullRequestResponse } from "../src/index";
-import { CodexAgent } from "../src/agents/codex";
-import { ClaudeAgent } from "../src/agents/claude";
-import { CodexResponse } from "../src/types";
+import { describe, it, expect, vi } from "vitest";
+import dotenv from "dotenv";
 
-// Mock dependencies
-vi.mock("../src/agents/codex");
-vi.mock("../src/agents/claude");
+import { VibeKit } from "../packages/sdk/src/index.js";
+import { createE2BProvider } from "../packages/e2b/dist/index.js";
+import { skipIfNoVibeKitKeys, skipTest } from "./helpers/test-utils.js";
 
-const MockedCodexAgent = vi.mocked(CodexAgent);
-const MockedClaudeAgent = vi.mocked(ClaudeAgent);
+// Type imports to verify they are properly exported
+import type {
+  AgentMode,
+  ModelProvider,
+  Conversation,
+  PullRequestResult,
+  AgentResponse,
+  ExecuteCommandOptions,
+} from "../packages/sdk/src/index.js";
 
-describe("VibeKit", () => {
-  let codexConfig: VibeKitConfig;
-  let claudeConfig: VibeKitConfig;
-  let mockCodexAgent: any;
-  let mockClaudeAgent: any;
+dotenv.config();
 
-  beforeEach(() => {
-    codexConfig = {
-      agent: {
-        type: "codex",
-        model: {
-          name: "gpt-4",
-          apiKey: "test-openai-key",
-        },
-      },
-      environment: {
-        e2b: {
-          apiKey: "test-e2b-key",
-        },
-      },
-      github: {
-        token: "test-github-token",
-        repository: "octocat/hello-world",
-      },
-    };
+describe("VibeKit SDK", () => {
+  it("should have all types properly exported", () => {
+    // Type checking test - these will fail at compile time if types are not exported
+    // We're just verifying the types can be used, not testing runtime behavior
+    type TestAgentMode = AgentMode;
+    type TestProvider = ModelProvider;
+    type TestConversation = Conversation;
+    type TestAgentResponse = AgentResponse;
+    type TestExecuteOptions = ExecuteCommandOptions;
+    type TestPrResult = PullRequestResult;
 
-    claudeConfig = {
-      agent: {
+    // Example usage to verify types work correctly
+    const agentMode: TestAgentMode = "code";
+    const provider: TestProvider = "anthropic";
+
+    // If this test compiles and runs, all types are properly exported
+    expect(agentMode).toBe("code");
+    expect(provider).toBe("anthropic");
+  });
+
+  it("should create working directory", async () => {
+    if (skipIfNoVibeKitKeys()) {
+      return skipTest();
+    }
+
+    const dir = "/var/vibe0";
+
+    const e2bProvider = createE2BProvider({
+      apiKey: process.env.E2B_API_KEY!,
+      templateId: "vibekit-claude",
+    });
+
+    const vibeKit = new VibeKit()
+      .withAgent({
         type: "claude",
-        model: {
-          name: "claude-3-5-sonnet-20241022",
-          apiKey: "test-anthropic-key",
-        },
-      },
-      environment: {
-        e2b: {
-          apiKey: "test-e2b-key",
-          templateId: "test-template",
-        },
-      },
-      github: {
-        token: "test-github-token",
-        repository: "octocat/hello-world",
-      },
-    };
+        provider: "anthropic",
+        apiKey: process.env.ANTHROPIC_API_KEY!,
+        model: "claude-sonnet-4-20250514",
+      })
+      .withSandbox(e2bProvider)
+      .withWorkingDirectory(dir);
 
-    mockCodexAgent = {
-      generateCode: vi.fn(),
-      createPullRequest: vi.fn(),
-      runTests: vi.fn(),
-      killSandbox: vi.fn(),
-      pauseSandbox: vi.fn(),
-      resumeSandbox: vi.fn(),
-    };
+    const result = await vibeKit.executeCommand("pwd");
 
-    mockClaudeAgent = {
-      generateCode: vi.fn(),
-      createPullRequest: vi.fn(),
-      runTests: vi.fn(),
-      killSandbox: vi.fn(),
-      pauseSandbox: vi.fn(),
-      resumeSandbox: vi.fn(),
-    };
+    const pwd = result.stdout.trim();
 
-    MockedCodexAgent.mockImplementation(() => mockCodexAgent);
-    MockedClaudeAgent.mockImplementation(() => mockClaudeAgent);
-  });
+    await vibeKit.kill();
 
-  describe("constructor", () => {
-    it("should accept daytona environment configuration", () => {
-      const daytonaConfig: VibeKitConfig = {
-        agent: {
-          type: "codex",
-          model: {
-            name: "gpt-4",
-            apiKey: "test-openai-key",
-          },
-        },
-        environment: {
-          daytona: {
-            apiKey: "test-daytona-key",
-            image: "test-image",
-            serverUrl: "https://test-daytona-server.com",
-          },
-        },
-        github: {
-          token: "test-github-token",
-          repository: "octocat/hello-world",
-        },
-      };
+    expect(pwd).toBe(dir);
+  }, 60000);
 
-      // Daytona support is now implemented, so it should not throw an error
-      expect(() => {
-        new VibeKit(daytonaConfig);
-      }).not.toThrow();
-    });
-  });
+  it("should download repository", async () => {
+    if (skipIfNoVibeKitKeys()) {
+      return skipTest();
+    }
 
-  describe("generateCode", () => {
-    it("should use Codex agent when configured", async () => {
-      const vibeKit = new VibeKit(codexConfig);
-      const mockResponse = {
-        exitCode: 0,
-        stdout: "test",
-        stderr: "",
-        sandboxId: "test",
-      };
+    const dir = "/var/vibe0";
 
-      mockCodexAgent.generateCode.mockResolvedValue(mockResponse);
-
-      const result = await vibeKit.generateCode({
-        prompt: "test prompt",
-        mode: "code",
-        history: [],
-        background: false,
-      });
-
-      expect(MockedCodexAgent).toHaveBeenCalledWith(
-        expect.objectContaining({
-          providerApiKey: "test-openai-key",
-          githubToken: "test-github-token",
-          repoUrl: "octocat/hello-world",
-          e2bApiKey: "test-e2b-key",
-          model: "gpt-4",
-        })
-      );
-      expect(mockCodexAgent.generateCode).toHaveBeenCalledWith(
-        "test prompt",
-        "code",
-        undefined,
-        [],
-        undefined,
-        false
-      );
-      expect(result).toBe(mockResponse);
+    const e2bProvider = createE2BProvider({
+      apiKey: process.env.E2B_API_KEY!,
+      templateId: "vibekit-claude",
     });
 
-    it("should work with Codex agent when GitHub config is not provided", async () => {
-      const configWithoutGithub: VibeKitConfig = {
-        agent: {
-          type: "codex",
-          model: {
-            name: "gpt-4",
-            apiKey: "test-openai-key",
-          },
-        },
-        environment: {
-          e2b: {
-            apiKey: "test-e2b-key",
-          },
-        },
-      };
-
-      const vibeKit = new VibeKit(configWithoutGithub);
-      const mockResponse = {
-        exitCode: 0,
-        stdout: "test",
-        stderr: "",
-        sandboxId: "test",
-      };
-
-      mockCodexAgent.generateCode.mockResolvedValue(mockResponse);
-
-      const result = await vibeKit.generateCode({
-        prompt: "test prompt",
-        mode: "code",
-        history: [],
-        background: false,
-      });
-
-      expect(MockedCodexAgent).toHaveBeenCalledWith(
-        expect.objectContaining({
-          providerApiKey: "test-openai-key",
-          githubToken: undefined,
-          repoUrl: undefined,
-          e2bApiKey: "test-e2b-key",
-          model: "gpt-4",
-        })
-      );
-      expect(mockCodexAgent.generateCode).toHaveBeenCalledWith(
-        "test prompt",
-        "code",
-        undefined,
-        [],
-        undefined,
-        false
-      );
-      expect(result).toBe(mockResponse);
-    });
-
-    it("should use Claude agent when configured", async () => {
-      const vibeKit = new VibeKit(claudeConfig);
-      const mockResponse = {
-        exitCode: 0,
-        stdout: "test code",
-        stderr: "",
-        sandboxId: "test-sandbox-id",
-      };
-
-      mockClaudeAgent.generateCode.mockResolvedValue(mockResponse);
-
-      const result = await vibeKit.generateCode({
-        prompt: "test prompt",
-        mode: "code",
-        history: [],
-        background: false,
-      });
-
-      expect(MockedClaudeAgent).toHaveBeenCalledWith(
-        expect.objectContaining({
-          providerApiKey: "test-anthropic-key",
-          githubToken: "test-github-token",
-          repoUrl: "octocat/hello-world",
-          e2bApiKey: "test-e2b-key",
-        })
-      );
-      expect(mockClaudeAgent.generateCode).toHaveBeenCalledWith(
-        "test prompt",
-        "code",
-        undefined,
-        [],
-        undefined,
-        false
-      );
-      expect(result).toBe(mockResponse);
-    });
-
-    it("should work with Claude agent when GitHub config is not provided", async () => {
-      const configWithoutGithub: VibeKitConfig = {
-        agent: {
-          type: "claude",
-          model: {
-            name: "claude-3-5-sonnet-20241022",
-            apiKey: "test-anthropic-key",
-          },
-        },
-        environment: {
-          e2b: {
-            apiKey: "test-e2b-key",
-            templateId: "test-template",
-          },
-        },
-      };
-
-      const vibeKit = new VibeKit(configWithoutGithub);
-      const mockResponse = {
-        exitCode: 0,
-        stdout: "test code",
-        stderr: "",
-        sandboxId: "test-sandbox-id",
-      };
-
-      mockClaudeAgent.generateCode.mockResolvedValue(mockResponse);
-
-      const result = await vibeKit.generateCode({
-        prompt: "test prompt",
-        mode: "code",
-        history: [],
-        background: false,
-      });
-
-      expect(MockedClaudeAgent).toHaveBeenCalledWith(
-        expect.objectContaining({
-          providerApiKey: "test-anthropic-key",
-          githubToken: undefined,
-          repoUrl: undefined,
-          e2bApiKey: "test-e2b-key",
-        })
-      );
-      expect(mockClaudeAgent.generateCode).toHaveBeenCalledWith(
-        "test prompt",
-        "code",
-        undefined,
-        [],
-        undefined,
-        false
-      );
-      expect(result).toBe(mockResponse);
-    });
-
-    it("should pass callbacks to Codex agent", async () => {
-      const vibeKit = new VibeKit(codexConfig);
-      const callbacks = {
-        onUpdate: vi.fn(),
-        onError: vi.fn(),
-      };
-
-      await vibeKit.generateCode({
-        prompt: "test prompt",
-        mode: "code",
-        history: [],
-        callbacks,
-        background: false,
-      });
-
-      // Verify that generateCode was called with the correct parameters
-      // The callbacks will be wrapped functions, so we check that they exist
-      expect(mockCodexAgent.generateCode).toHaveBeenCalledWith(
-        "test prompt",
-        "code",
-        undefined,
-        [],
-        expect.objectContaining({
-          onUpdate: expect.any(Function),
-          onError: expect.any(Function),
-        }),
-        false
-      );
-    });
-
-    it("should handle callbacks for Claude agent", async () => {
-      const vibeKit = new VibeKit(claudeConfig);
-      const callbacks = {
-        onUpdate: vi.fn(),
-        onError: vi.fn(),
-      };
-      const mockResponse = {
-        exitCode: 0,
-        stdout: "test code",
-        stderr: "",
-        sandboxId: "test-sandbox-id",
-      };
-
-      mockClaudeAgent.generateCode.mockResolvedValue(mockResponse);
-
-      await vibeKit.generateCode({
-        prompt: "test prompt",
-        mode: "code",
-        history: [],
-        callbacks,
-        background: false,
-      });
-
-      expect(mockClaudeAgent.generateCode).toHaveBeenCalledWith(
-        "test prompt",
-        "code",
-        undefined,
-        [],
-        expect.objectContaining({
-          onUpdate: expect.any(Function),
-          onError: expect.any(Function),
-        }),
-        false
-      );
-    });
-
-    it("should throw error for unsupported agent", async () => {
-      const unsupportedConfig = {
-        agent: {
-          type: "devin" as any,
-          model: {
-            apiKey: "test-key",
-          },
-        },
-        environment: {
-          e2b: {
-            apiKey: "test-e2b-key",
-          },
-        },
-        github: {
-          token: "test-github-token",
-          repository: "test/repo",
-        },
-      };
-
-      expect(() => {
-        new VibeKit(unsupportedConfig);
-      }).toThrow("Unsupported agent type: devin");
-    });
-
-    it("should pass branch parameter to Codex agent", async () => {
-      const vibeKit = new VibeKit(codexConfig);
-      const mockResponse = {
-        exitCode: 0,
-        stdout: "test",
-        stderr: "",
-        sandboxId: "test",
-      };
-
-      mockCodexAgent.generateCode.mockResolvedValue(mockResponse);
-
-      await vibeKit.generateCode({
-        prompt: "test prompt",
-        mode: "code",
-        branch: "feature-branch",
-        history: [],
-        background: false,
-      });
-
-      expect(mockCodexAgent.generateCode).toHaveBeenCalledWith(
-        "test prompt",
-        "code",
-        "feature-branch",
-        [],
-        undefined,
-        false
-      );
-    });
-
-    it("should pass branch parameter to Claude agent", async () => {
-      const vibeKit = new VibeKit(claudeConfig);
-      const mockResponse = {
-        exitCode: 0,
-        stdout: "test code",
-        stderr: "",
-        sandboxId: "test-sandbox-id",
-      };
-
-      mockClaudeAgent.generateCode.mockResolvedValue(mockResponse);
-
-      await vibeKit.generateCode({
-        prompt: "test prompt",
-        mode: "code",
-        branch: "feature-branch",
-        history: [],
-        background: false,
-      });
-
-      expect(mockClaudeAgent.generateCode).toHaveBeenCalledWith(
-        "test prompt",
-        "code",
-        "feature-branch",
-        [],
-        undefined,
-        false
-      );
-    });
-
-    it("should pass branch parameter with callbacks", async () => {
-      const vibeKit = new VibeKit(codexConfig);
-      const callbacks = {
-        onUpdate: vi.fn(),
-        onError: vi.fn(),
-      };
-      const mockResponse = {
-        exitCode: 0,
-        stdout: "test",
-        stderr: "",
-        sandboxId: "test",
-      };
-
-      mockCodexAgent.generateCode.mockResolvedValue(mockResponse);
-
-      await vibeKit.generateCode({
-        prompt: "test prompt",
-        mode: "code",
-        branch: "feature-branch",
-        history: [],
-        callbacks,
-        background: false,
-      });
-
-      expect(mockCodexAgent.generateCode).toHaveBeenCalledWith(
-        "test prompt",
-        "code",
-        "feature-branch",
-        [],
-        expect.objectContaining({
-          onUpdate: expect.any(Function),
-          onError: expect.any(Function),
-        }),
-        false
-      );
-    });
-  });
-
-  describe("createPullRequest", () => {
-    it("should create PR using Codex agent", async () => {
-      const vibeKit = new VibeKit(codexConfig);
-      const mockPRResponse: PullRequestResponse = {
-        html_url: "https://github.com/octocat/hello-world/pull/1",
-        number: 1,
-        branchName: "codex/test-branch",
-        commitSha: "abc123",
-      };
-
-      mockCodexAgent.createPullRequest.mockResolvedValue(mockPRResponse);
-
-      const result = await vibeKit.createPullRequest();
-
-      expect(MockedCodexAgent).toHaveBeenCalledWith(
-        expect.objectContaining({
-          providerApiKey: "test-openai-key",
-          githubToken: "test-github-token",
-          repoUrl: "octocat/hello-world",
-          e2bApiKey: "test-e2b-key",
-          model: "gpt-4",
-        })
-      );
-      expect(mockCodexAgent.createPullRequest).toHaveBeenCalled();
-      expect(result).toBe(mockPRResponse);
-    });
-
-    it("should create PR using Claude agent", async () => {
-      const vibeKit = new VibeKit(claudeConfig);
-      const mockPRResponse: PullRequestResponse = {
-        html_url: "https://github.com/octocat/hello-world/pull/2",
-        number: 2,
-        branchName: "claude/test-branch",
-        commitSha: "def456",
-      };
-
-      mockClaudeAgent.createPullRequest.mockResolvedValue(mockPRResponse);
-
-      const result = await vibeKit.createPullRequest();
-
-      expect(MockedClaudeAgent).toHaveBeenCalledWith(
-        expect.objectContaining({
-          providerApiKey: "test-anthropic-key",
-          githubToken: "test-github-token",
-          repoUrl: "octocat/hello-world",
-          e2bApiKey: "test-e2b-key",
-        })
-      );
-      expect(mockClaudeAgent.createPullRequest).toHaveBeenCalled();
-      expect(result).toBe(mockPRResponse);
-    });
-
-    it("should throw error when GitHub config is missing for Codex agent", async () => {
-      const configWithoutGithub: VibeKitConfig = {
-        agent: {
-          type: "codex",
-          model: {
-            name: "gpt-4",
-            apiKey: "test-openai-key",
-          },
-        },
-        environment: {
-          e2b: {
-            apiKey: "test-e2b-key",
-          },
-        },
-      };
-
-      const vibeKit = new VibeKit(configWithoutGithub);
-
-      // Mock the agent to throw the expected error
-      mockCodexAgent.createPullRequest.mockRejectedValue(
-        new Error(
-          "GitHub configuration is required for creating pull requests. Please provide githubToken and repoUrl in your configuration."
-        )
-      );
-
-      await expect(vibeKit.createPullRequest()).rejects.toThrow(
-        "GitHub configuration is required for creating pull requests. Please provide githubToken and repoUrl in your configuration."
-      );
-    });
-
-    it("should throw error when GitHub config is missing for Claude agent", async () => {
-      const configWithoutGithub: VibeKitConfig = {
-        agent: {
-          type: "claude",
-          model: {
-            name: "claude-3-5-sonnet-20241022",
-            apiKey: "test-anthropic-key",
-          },
-        },
-        environment: {
-          e2b: {
-            apiKey: "test-e2b-key",
-            templateId: "test-template",
-          },
-        },
-      };
-
-      const vibeKit = new VibeKit(configWithoutGithub);
-
-      // Mock the agent to throw the expected error
-      mockClaudeAgent.createPullRequest.mockRejectedValue(
-        new Error(
-          "GitHub configuration is required for creating pull requests. Please provide githubToken and repoUrl in your configuration."
-        )
-      );
-
-      await expect(vibeKit.createPullRequest()).rejects.toThrow(
-        "GitHub configuration is required for creating pull requests. Please provide githubToken and repoUrl in your configuration."
-      );
-    });
-  });
-
-  describe("runTests", () => {
-    it("should run tests using Codex agent", async () => {
-      const vibeKit = new VibeKit(codexConfig);
-      const mockTestResponse = {
-        exitCode: 0,
-        stdout: "✓ All tests passed",
-        stderr: "",
-        sandboxId: "test-sandbox",
-      };
-
-      mockCodexAgent.runTests.mockResolvedValue(mockTestResponse);
-
-      const result = await vibeKit.runTests({});
-
-      expect(MockedCodexAgent).toHaveBeenCalledWith(
-        expect.objectContaining({
-          providerApiKey: "test-openai-key",
-          githubToken: "test-github-token",
-          repoUrl: "octocat/hello-world",
-          e2bApiKey: "test-e2b-key",
-          model: "gpt-4",
-        })
-      );
-      expect(mockCodexAgent.runTests).toHaveBeenCalledWith(
-        undefined,
-        undefined,
-        undefined
-      );
-      expect(result).toBe(mockTestResponse);
-    });
-
-    it("should run tests using Claude agent", async () => {
-      const vibeKit = new VibeKit(claudeConfig);
-      const mockTestResponse = {
-        exitCode: 0,
-        stdout: "✓ All tests passed",
-        stderr: "",
-        sandboxId: "test-sandbox",
-      };
-
-      mockClaudeAgent.runTests.mockResolvedValue(mockTestResponse);
-
-      const result = await vibeKit.runTests({});
-
-      expect(MockedClaudeAgent).toHaveBeenCalledWith(
-        expect.objectContaining({
-          providerApiKey: "test-anthropic-key",
-          githubToken: "test-github-token",
-          repoUrl: "octocat/hello-world",
-          e2bApiKey: "test-e2b-key",
-        })
-      );
-      expect(mockClaudeAgent.runTests).toHaveBeenCalledWith(
-        undefined,
-        undefined,
-        undefined
-      );
-      expect(result).toBe(mockTestResponse);
-    });
-
-    it("should run tests with callbacks using Codex agent", async () => {
-      const vibeKit = new VibeKit(codexConfig);
-      const mockTestResponse = {
-        exitCode: 0,
-        stdout: "✓ All tests passed",
-        stderr: "",
-        sandboxId: "test-sandbox",
-      };
-
-      const mockCallbacks = {
-        onUpdate: vi.fn(),
-        onError: vi.fn(),
-      };
-
-      mockCodexAgent.runTests.mockResolvedValue(mockTestResponse);
-
-      const result = await vibeKit.runTests({
-        callbacks: mockCallbacks,
-      });
-
-      expect(mockCodexAgent.runTests).toHaveBeenCalledWith(
-        undefined,
-        undefined,
-        mockCallbacks
-      );
-      expect(result).toBe(mockTestResponse);
-    });
-
-    it("should run tests on specific branch", async () => {
-      const vibeKit = new VibeKit(codexConfig);
-      const mockTestResponse = {
-        exitCode: 0,
-        stdout: "✓ All tests passed",
-        stderr: "",
-        sandboxId: "test-sandbox",
-      };
-
-      mockCodexAgent.runTests.mockResolvedValue(mockTestResponse);
-
-      const result = await vibeKit.runTests({ branch: "feature-branch" });
-
-      expect(mockCodexAgent.runTests).toHaveBeenCalledWith(
-        "feature-branch",
-        undefined,
-        undefined
-      );
-      expect(result).toBe(mockTestResponse);
-    });
-
-    it("should run tests with conversation history", async () => {
-      const vibeKit = new VibeKit(codexConfig);
-      const mockTestResponse = {
-        exitCode: 0,
-        stdout: "✓ All tests passed",
-        stderr: "",
-        sandboxId: "test-sandbox",
-      };
-
-      const mockHistory = [
-        { role: "user" as const, content: "Add new feature" },
-        { role: "assistant" as const, content: "Feature added" },
-      ];
-
-      mockCodexAgent.runTests.mockResolvedValue(mockTestResponse);
-
-      const result = await vibeKit.runTests({
-        branch: "main",
-        history: mockHistory,
-      });
-
-      expect(mockCodexAgent.runTests).toHaveBeenCalledWith(
-        "main",
-        mockHistory,
-        undefined
-      );
-      expect(result).toBe(mockTestResponse);
-    });
-
-    it("should handle test failures", async () => {
-      const vibeKit = new VibeKit(codexConfig);
-      const mockTestResponse = {
-        exitCode: 1,
-        stdout: "",
-        stderr: "✗ Tests failed",
-        sandboxId: "test-sandbox",
-      };
-
-      mockCodexAgent.runTests.mockResolvedValue(mockTestResponse);
-
-      const result = await vibeKit.runTests({});
-
-      expect(result).toBe(mockTestResponse);
-      // Type assertion since AgentResponse is a union type
-      const typedResult = result as CodexResponse;
-      expect(typedResult.exitCode).toBe(1);
-      expect(typedResult.stderr).toBe("✗ Tests failed");
-    });
-  });
-
-  describe("sandbox management", () => {
-    describe("kill", () => {
-      it("should kill sandbox using Codex agent", async () => {
-        const vibeKit = new VibeKit(codexConfig);
-
-        await vibeKit.kill();
-
-        expect(MockedCodexAgent).toHaveBeenCalledWith(
-          expect.objectContaining({
-            providerApiKey: "test-openai-key",
-            githubToken: "test-github-token",
-            repoUrl: "octocat/hello-world",
-            e2bApiKey: "test-e2b-key",
-            model: "gpt-4",
-          })
-        );
-        expect(mockCodexAgent.killSandbox).toHaveBeenCalled();
-      });
-
-      it("should kill sandbox using Claude agent", async () => {
-        const vibeKit = new VibeKit(claudeConfig);
-
-        await vibeKit.kill();
-
-        expect(MockedClaudeAgent).toHaveBeenCalledWith(
-          expect.objectContaining({
-            providerApiKey: "test-anthropic-key",
-            githubToken: "test-github-token",
-            repoUrl: "octocat/hello-world",
-            e2bApiKey: "test-e2b-key",
-          })
-        );
-        expect(mockClaudeAgent.killSandbox).toHaveBeenCalled();
-      });
-    });
-
-    describe("pause", () => {
-      it("should pause sandbox using Codex agent", async () => {
-        const vibeKit = new VibeKit(codexConfig);
-
-        await vibeKit.pause();
-
-        expect(MockedCodexAgent).toHaveBeenCalledWith(
-          expect.objectContaining({
-            providerApiKey: "test-openai-key",
-            githubToken: "test-github-token",
-            repoUrl: "octocat/hello-world",
-            e2bApiKey: "test-e2b-key",
-            model: "gpt-4",
-          })
-        );
-        expect(mockCodexAgent.pauseSandbox).toHaveBeenCalled();
-      });
-
-      it("should pause sandbox using Claude agent", async () => {
-        const vibeKit = new VibeKit(claudeConfig);
-
-        await vibeKit.pause();
-
-        expect(MockedClaudeAgent).toHaveBeenCalledWith(
-          expect.objectContaining({
-            providerApiKey: "test-anthropic-key",
-            githubToken: "test-github-token",
-            repoUrl: "octocat/hello-world",
-            e2bApiKey: "test-e2b-key",
-          })
-        );
-        expect(mockClaudeAgent.pauseSandbox).toHaveBeenCalled();
-      });
-    });
-
-    describe("resume", () => {
-      it("should resume sandbox using Codex agent", async () => {
-        const vibeKit = new VibeKit(codexConfig);
-
-        await vibeKit.resume();
-
-        expect(MockedCodexAgent).toHaveBeenCalledWith(
-          expect.objectContaining({
-            providerApiKey: "test-openai-key",
-            githubToken: "test-github-token",
-            repoUrl: "octocat/hello-world",
-            e2bApiKey: "test-e2b-key",
-            model: "gpt-4",
-          })
-        );
-        expect(mockCodexAgent.resumeSandbox).toHaveBeenCalled();
-      });
-
-      it("should resume sandbox using Claude agent", async () => {
-        const vibeKit = new VibeKit(claudeConfig);
-
-        await vibeKit.resume();
-
-        expect(MockedClaudeAgent).toHaveBeenCalledWith(
-          expect.objectContaining({
-            providerApiKey: "test-anthropic-key",
-            githubToken: "test-github-token",
-            repoUrl: "octocat/hello-world",
-            e2bApiKey: "test-e2b-key",
-          })
-        );
-        expect(mockClaudeAgent.resumeSandbox).toHaveBeenCalled();
-      });
-    });
-  });
-
-  it("should handle executeCommand with custom options", async () => {
-    const vibekit = new VibeKit({
-      agent: {
+    const vibeKit = new VibeKit()
+      .withAgent({
         type: "claude",
-        model: {
-          provider: "anthropic",
-          name: "claude-3-5-sonnet-20241022",
-          apiKey: "test-api-key",
-        },
-      },
-      environment: {
-        e2b: {
-          apiKey: "test-e2b-key",
-        },
-      },
+        provider: "anthropic",
+        apiKey: process.env.ANTHROPIC_API_KEY!,
+        model: "claude-sonnet-4-20250514",
+      })
+      .withSandbox(e2bProvider)
+      .withWorkingDirectory(dir)
+      .withSecrets({
+        GH_TOKEN: process.env.GH_TOKEN || process.env.GITHUB_TOKEN!,
+      });
+
+    // Clone repository explicitly
+    await vibeKit.cloneRepository("superagent-ai/signals");
+
+    // Verify the repository was cloned by checking for git directory
+    const result = await vibeKit.executeCommand("test -d .git && echo 'git_repo_exists'");
+
+    await vibeKit.kill();
+
+    expect(result.stdout.trim()).toBe("git_repo_exists");
+  }, 60000);
+  it("should set env variables", async () => {
+    if (skipIfNoVibeKitKeys()) {
+      return skipTest();
+    }
+
+    const e2bProvider = createE2BProvider({
+      apiKey: process.env.E2B_API_KEY!,
+      templateId: "vibekit-claude",
     });
 
-    const mockCallbacks = {
-      onUpdate: vi.fn(),
-      onError: vi.fn(),
-    };
+    const vibeKit = new VibeKit()
+      .withAgent({
+        type: "claude",
+        provider: "anthropic",
+        apiKey: process.env.ANTHROPIC_API_KEY!,
+        model: "claude-sonnet-4-20250514",
+      })
+      .withSandbox(e2bProvider)
+      .withSecrets({ MY_SECRET: "test" });
 
-    // Mock the agent's executeCommand method
-    vi.spyOn(vibekit as any, "agent", "get").mockReturnValue({
-      executeCommand: vi.fn().mockResolvedValue({
-        sandboxId: "test-sandbox",
-        exitCode: 0,
-        stdout: "Hello World",
-        stderr: "",
-      }),
+    const output = await vibeKit.executeCommand("echo $MY_SECRET");
+    const secret = output.stdout.trim();
+
+    expect(secret).toBe("test");
+  }, 60000);
+
+  it("should stream executeCommand output", async () => {
+    if (skipIfNoVibeKitKeys()) {
+      return skipTest();
+    }
+
+    const e2bProvider = createE2BProvider({
+      apiKey: process.env.E2B_API_KEY!,
+      templateId: "vibekit-claude",
     });
 
-    const result = await vibekit.executeCommand("echo 'Hello World'", {
-      timeoutMs: 30000,
-      callbacks: mockCallbacks,
+    const vibeKit = new VibeKit()
+      .withAgent({
+        type: "claude",
+        provider: "anthropic",
+        apiKey: process.env.ANTHROPIC_API_KEY!,
+        model: "claude-sonnet-4-20250514",
+      })
+      .withSandbox(e2bProvider);
+
+    const streamedData: string[] = [];
+    let tokensReceived = 0;
+
+    vibeKit.on("stdout", (data) => {
+      console.log("Received streaming data:", data);
+      streamedData.push(data);
+      tokensReceived++;
     });
 
-    expect(result.exitCode).toBe(0);
-    expect(result.stdout).toBe("Hello World");
-    expect(result.sandboxId).toBe("test-sandbox");
-  });
+    const result = await vibeKit.executeCommand("echo 'streaming test'");
+
+    await vibeKit.kill();
+
+    console.log(`Total streaming events received: ${tokensReceived}`);
+    console.log(`Final result: ${result.stdout}`);
+
+    expect(streamedData.length).toBeGreaterThan(0);
+    expect(tokensReceived).toBeGreaterThan(0);
+  }, 60000);
 });
